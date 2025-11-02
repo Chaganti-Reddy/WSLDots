@@ -362,3 +362,167 @@ autoload -Uz compinit && compinit -u
 
 # Default start location
 cd /mnt/d
+
+# === Competitive Programming Helper ===
+# Supports: cses, cf, cc, etc.
+# Usage:
+#   cses new 1621
+#   cses run 1621 < input.txt
+#   cses test 1621
+
+_cp_helper() {
+    local platform="$1"
+    local action="$2"
+    local problem="$3"
+
+    # Ensure we're inside a Rust project
+    if [[ ! -f "Cargo.toml" ]]; then
+        echo "Not inside a Rust project (Cargo.toml not found)"
+        return 1
+    fi
+
+    if [[ -z "$action" || -z "$problem" ]]; then
+        echo "Usage: $platform <new|run|test> <problem_number>"
+        return 1
+    fi
+
+    local file="src/bin/${platform}${problem}.rs"
+
+    case "$action" in
+        new)
+            mkdir -p src/bin
+            if [[ -f "$file" ]]; then
+                echo "File already exists: $file"
+            else
+                echo "Creating new $platform file: $file"
+                cat > "$file" << 'EOF'
+use std::io::{self, Read};
+
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+
+    let mut iter = input.split_whitespace();
+    // Example: let n: usize = iter.next().unwrap().parse().unwrap();
+
+    println!("Hello, CP!");
+}
+EOF
+                echo "File created: $file"
+            fi
+
+            # Ensure input/output files exist
+            if [[ ! -f input.txt ]]; then
+                echo "Creating input.txt"
+                echo "" > input.txt
+            fi
+            if [[ ! -f output.txt ]]; then
+                echo "Creating output.txt"
+                echo "" > output.txt
+            fi
+
+            # Open all in VS Code if available
+            if command -v code &>/dev/null; then
+                echo "Opening files in VS Code..."
+                code -r "$file" input.txt output.txt
+            else
+                echo "VS Code not found; skipping open."
+            fi
+            ;;
+        run)
+            if [[ ! -f "$file" ]]; then
+                echo "File not found: $file"
+                echo "Tip: create it first using '$platform new $problem'"
+                return 1
+            fi
+
+            echo "Running $platform$problem (optimized)..."
+            cargo run --release --bin "${platform}${problem}" "${@:4}"
+            ;;
+        test)
+            if [[ ! -f "$file" ]]; then
+                echo "File not found: $file"
+                echo "Tip: create it first using '$platform new $problem'"
+                return 1
+            fi
+
+            echo "Running all test cases for $platform$problem..."
+            local inputs=(input*.txt)
+            local total=${#inputs[@]}
+            if (( total == 0 )); then
+                echo "No input files found (expected: input1.txt, input2.txt, ...)"
+                return 1
+            fi
+
+            local passed=0
+            local failed=0
+            local start_total=$(($(date +%s%N)/1000000))
+
+            for inp in "${inputs[@]}"; do
+                local num="${inp//[^0-9]/}"
+                [[ -z "$num" ]] && num=0
+
+                # Allow fallback to output.txt if no numbered version
+                local expected="output${num}.txt"
+                if [[ ! -f "$expected" && -f "output.txt" ]]; then
+                    expected="output.txt"
+                fi
+
+                local tmp_out=".tmp_output_${problem}_${num}.txt"
+                echo "=== Test case ${num} (${inp}) ==="
+
+                local start_time=$(($(date +%s%N)/1000000))
+                cargo run --release --bin "${platform}${problem}" < "$inp" > "$tmp_out" 2>/dev/null
+                local end_time=$(($(date +%s%N)/1000000))
+                local duration=$((end_time - start_time))
+
+                # Compare ignoring CRLF/newline
+                if [[ -f "$expected" ]]; then
+                    if diff -q <(tr -d '\r' < "$expected" | sed -e '$a\') \
+                                <(tr -d '\r' < "$tmp_out" | sed -e '$a\') >/dev/null; then
+                        echo "✅ Passed [${duration}ms]"
+                        ((passed++))
+                    else
+                        echo "❌ Failed [${duration}ms] (diff below)"
+                        diff --color=always -u \
+                            <(tr -d '\r' < "$expected" | sed -e '$a\') \
+                            <(tr -d '\r' < "$tmp_out" | sed -e '$a\') | sed 's/^/   /'
+                        ((failed++))
+                    fi
+                else
+                    echo "--- Program output (no expected output file found) ---"
+                    cat "$tmp_out"
+                    ((failed++))
+                fi
+
+                rm -f "$tmp_out"
+                echo
+            done
+
+            local end_total=$(($(date +%s%N)/1000000))
+            local total_time=$((end_total - start_total))
+            echo "Summary: $passed/${total} passed, $failed failed  [${total_time}ms total]"
+            ;;
+        *)
+            echo "Unknown action: $action"
+            echo "Usage: $platform <new|run|test> <problem_number>"
+            return 1
+            ;;
+    esac
+}
+
+# Platform commands
+cses() { _cp_helper "cses" "$@"; }
+cf()   { _cp_helper "cf" "$@"; }
+cc()   { _cp_helper "cc" "$@"; }
+
+# Autocomplete problem numbers
+_cp_complete() {
+    local platform="${words[1]}"
+    local suggestions
+    suggestions=(${(f)"$(ls src/bin/${platform}*.rs 2>/dev/null | sed -E "s/.*${platform}([0-9A-Za-z_-]+)\.rs/\\1/")"})
+    compadd -- $suggestions
+}
+compdef _cp_complete cses
+compdef _cp_complete cf
+compdef _cp_complete cc
